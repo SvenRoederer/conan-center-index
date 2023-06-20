@@ -12,6 +12,7 @@ required_conan_version = ">=1.52.0"
 
 class XtensorConan(ConanFile):
     name = "xtensor"
+    package_type = "header-library"
     description = "C++ tensors with broadcasting and lazy computing"
     license = "BSD-3-Clause"
     url = "https://github.com/conan-io/conan-center-index"
@@ -50,7 +51,7 @@ class XtensorConan(ConanFile):
         basic_layout(self, src_folder="src")
 
     def requirements(self):
-        self.requires("xtl/0.7.4")
+        self.requires("xtl/0.7.5")
         self.requires("nlohmann_json/3.11.2")
         if self.options.xsimd:
             if Version(self.version) < "0.24.0":

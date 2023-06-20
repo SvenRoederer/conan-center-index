@@ -6,8 +6,8 @@ from conan.tools.env import VirtualBuildEnv, VirtualRunEnv
 from conan.tools.files import apply_conandata_patches, collect_libs, copy, export_conandata_patches, get, rename, replace_in_file, rmdir, save
 from conan.tools.microsoft import is_msvc, is_msvc_static_runtime
 from conan.tools.scm import Version
-from conans.tools import to_android_abi
 import os
+import re
 import textwrap
 
 required_conan_version = ">=1.54.0"
@@ -50,6 +50,8 @@ class OpenCVConan(ConanFile):
         "with_imgcodec_pfm": [True, False],
         "with_imgcodec_pxm": [True, False],
         "with_imgcodec_sunraster": [True, False],
+        "with_msmf": [True, False],
+        "with_msmf_dxva": [True, False],
         "neon": [True, False],
         "dnn": [True, False],
         "dnn_cuda": [True, False],
@@ -86,6 +88,8 @@ class OpenCVConan(ConanFile):
         "with_imgcodec_pfm": False,
         "with_imgcodec_pxm": False,
         "with_imgcodec_sunraster": False,
+        "with_msmf": True,
+        "with_msmf_dxva": True,
         "neon": True,
         "dnn": True,
         "dnn_cuda": False,
@@ -126,6 +130,9 @@ class OpenCVConan(ConanFile):
         if self.settings.os != "Linux":
             del self.options.with_gtk
             del self.options.with_v4l
+        if self.settings.os != "Windows":
+            del self.options.with_msmf
+            del self.options.with_msmf_dxva
 
         if self._has_with_ffmpeg_option:
             # Following the packager choice, ffmpeg is enabled by default when
@@ -191,7 +198,7 @@ class OpenCVConan(ConanFile):
         if self.options.get_safe("with_tiff"):
             self.requires("libtiff/4.4.0")
         if self.options.with_eigen:
-            self.requires("eigen/3.3.9")
+            self.requires("eigen/3.4.0")
         if self.options.get_safe("with_ffmpeg"):
             # opencv doesn't support ffmpeg >= 5.0.0 for the moment (until 4.5.5 at least)
             self.requires("ffmpeg/4.4")
@@ -200,7 +207,7 @@ class OpenCVConan(ConanFile):
         if self.options.with_ipp == "intel-ipp":
             self.requires("intel-ipp/2020")
         if self.options.with_webp:
-            self.requires("libwebp/1.2.4")
+            self.requires("libwebp/1.3.0")
         if self.options.get_safe("contrib_freetype"):
             self.requires("freetype/2.12.1")
             self.requires("harfbuzz/6.0.0")
@@ -212,7 +219,8 @@ class OpenCVConan(ConanFile):
         if self.options.get_safe("with_gtk"):
             self.requires("gtk/system")
         if self.options.dnn:
-            self.requires(f"protobuf/{self._protobuf_version}")
+            # Symbols are exposed https://github.com/conan-io/conan-center-index/pull/16678#issuecomment-1507811867
+            self.requires(f"protobuf/{self._protobuf_version}", transitive_libs=True)
         if self.options.with_ade:
             self.requires("ade/0.1.2a")
 
@@ -237,8 +245,7 @@ class OpenCVConan(ConanFile):
                 self.tool_requires(f"protobuf/{self._protobuf_version}")
 
     def source(self):
-        get(self, **self.conan_data["sources"][self.version][0],
-            destination=self.source_folder, strip_root=True)
+        get(self, **self.conan_data["sources"][self.version][0], strip_root=True)
 
         get(self, **self.conan_data["sources"][self.version][1],
             destination=self._contrib_folder, strip_root=True)
@@ -364,9 +371,9 @@ class OpenCVConan(ConanFile):
             tc.variables["OPENCV_FFMPEG_USE_FIND_PACKAGE"] = "ffmpeg"
             tc.variables["OPENCV_INSTALL_FFMPEG_DOWNLOAD_SCRIPT"] = False
             tc.variables["FFMPEG_LIBRARIES"] = "ffmpeg::avcodec;ffmpeg::avformat;ffmpeg::avutil;ffmpeg::swscale"
-            for component in ["avcodec", "avformat", "avutil", "swscale", "avresample"]:
-                # TODO: use self.dependencies once https://github.com/conan-io/conan/issues/12728 fixed
-                ffmpeg_component_version = self.deps_cpp_info["ffmpeg"].components[component].version
+            ffmpeg_cpp_info = self.dependencies["ffmpeg"].cpp_info
+            for component in ["avcodec", "avformat", "avutil", "swscale"]:
+                ffmpeg_component_version = ffmpeg_cpp_info.components[component].get_property("component_version")
                 tc.variables[f"FFMPEG_lib{component}_VERSION"] = ffmpeg_component_version
 
         tc.variables["WITH_GSTREAMER"] = False
@@ -430,15 +437,15 @@ class OpenCVConan(ConanFile):
         tc.variables["WITH_EIGEN"] = self.options.with_eigen
         tc.variables["HAVE_QUIRC"] = self.options.with_quirc  # force usage of quirc requirement
         tc.variables["WITH_DSHOW"] = is_msvc(self)
-        tc.variables["WITH_MSMF"] = is_msvc(self)
-        tc.variables["WITH_MSMF_DXVA"] = is_msvc(self)
+        tc.variables["WITH_MSMF"] = self.options.get_safe("with_msmf", False)
+        tc.variables["WITH_MSMF_DXVA"] = self.options.get_safe("with_msmf_dxva", False)
         tc.variables["OPENCV_MODULES_PUBLIC"] = "opencv"
         tc.variables["OPENCV_ENABLE_NONFREE"] = self.options.nonfree
 
-        if self.options.cpu_baseline:
+        if self.options.cpu_baseline or self.options.cpu_baseline == "":
             tc.variables["CPU_BASELINE"] = self.options.cpu_baseline
 
-        if self.options.cpu_dispatch:
+        if self.options.cpu_dispatch or self.options.cpu_dispatch == "":
             tc.variables["CPU_DISPATCH"] = self.options.cpu_dispatch
 
         if self.options.get_safe("neon") is not None:
@@ -480,6 +487,9 @@ class OpenCVConan(ConanFile):
 
         if is_msvc(self):
             tc.variables["BUILD_WITH_STATIC_CRT"] = is_msvc_static_runtime(self)
+
+        if self.settings.os == "Android":
+            tc.variables["BUILD_ANDROID_EXAMPLES"] = False
 
         tc.generate()
 
@@ -530,7 +540,7 @@ class OpenCVConan(ConanFile):
             return False
         gtk_version = self.dependencies["gtk"].ref.version
         if gtk_version == "system":
-            return self.options["gtk"].version == 2
+            return self.dependencies["gtk"].options.version == 2
         else:
             return Version(gtk_version) < "3.0.0"
 
@@ -739,23 +749,14 @@ class OpenCVConan(ConanFile):
                     self.cpp_info.components[conan_component].system_libs = ["dl", "m", "pthread", "rt"]
 
                 if self.settings.os == "Android":
-                    self.cpp_info.components[conan_component].includedirs = [
-                        os.path.join("sdk", "native", "jni", "include")]
                     self.cpp_info.components[conan_component].system_libs.append("log")
                     if int(str(self.settings.os.api_level)) > 20:
                         self.cpp_info.components[conan_component].system_libs.append("mediandk")
-                    if not self.options.shared:
-                        self.cpp_info.components[conan_component].libdirs.append(
-                            os.path.join("sdk", "native", "staticlibs", to_android_abi(str(self.settings.arch))))
-                        if conan_component == "opencv_core":
-                            self.cpp_info.components[conan_component].libdirs.append("lib")
-                            self.cpp_info.components[conan_component].libs += collect_libs(self)
 
-                if self.settings.os in ["iOS", "Macos", "Linux", "Neutrino"]:
-                    if not self.options.shared:
-                        if conan_component == "opencv_core":
-                            libs = list(filter(lambda x: not x.startswith("opencv"), collect_libs(self)))
-                            self.cpp_info.components[conan_component].libs += libs
+                if conan_component == "opencv_core" and not self.options.shared:
+                    lib_exclude_filter = "(opencv_|ippi|correspondence|multiview|numeric).*"
+                    libs = list(filter(lambda x: not re.match(lib_exclude_filter, x), collect_libs(self)))
+                    self.cpp_info.components[conan_component].libs += libs
 
                 # TODO: to remove in conan v2 once cmake_find_package* generators removed
                 self.cpp_info.components[conan_component].names["cmake_find_package"] = cmake_target
